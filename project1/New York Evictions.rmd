@@ -1,0 +1,575 @@
+---
+title: "A spatial Analysis of New York Evictions"
+Author: Miya Zhao
+output: html_document
+date: "`r format(Sys.time(), '%X, %d %B, %Y')`"
+---
+# Originality declaration  
+
+I, [Mingyuan Zhao], confirm that the work presented in this assessment is my own. Where information has been derived from other sources, I confirm that this has been indicated in the work.
+
+date: `r format(Sys.time(), '%d %B, %Y')`
+
+# Start your response here
+
+## Initial project scope
+
+1. Research Question:
+
+* What is my research question - is it different to the set question and why
+
+    - This research will identify the spatial patterns that can be used to help preventing people being evicted in the New York.
+    - My question is "How do the spatial patterns of eviction population distribution in New York City change before and after COVID-19?"
+
+
+2. Data:
+
+* Data Source: 
+    - Evictions data(.csv):https://data.cityofnewyork.us/City-Government/Evictions/6z8x-wfk4
+        - Contains information such as the date, location, area type, executor, advancement status, etc. of the eviction event.
+    - Community Districts(.shp):https://data.cityofnewyork.us/City-Government/Community-Districts/yfnk-k7r4
+        - Includes New York City’s Boundaries of Community Districts.
+        
+* Study Area: The whole New York City.(Focus on Community Districts)
+    - Why? In New York, eviction data is classified into two categories: residential and commercial. People are more likely to be affected by housing burden, social inequality, or other housing problems in the Residential Area, showing the disparity between poor and wealthy neighbourhoods. As a result, we decided to concentrate our investigation on the Residential Area.
+
+* Study Period: 2020, 2021, 2022
+    - Why? COVID-19 is an inevitable issue in recent years, leading to a global economic recession that is likely to have an impact on eviction. COVID-19 began to spread on a large scale in 2020, and various parts of the world, including New York, experienced blockades, quarantines, and restrictive measures. The epidemic situation of COVID-19 has eased in 2021 and 2022, and people have shown adaptation to the epidemic.
+    
+* CRS: EPSG:6538
+    - Why? I use the website: https://epsg.io/ to select the suitable CRS for my study area. As for this project, EPSG:6538 is used because the unit is metre and it suits the New York area.
+    
+3. Method: 
+
+The null hypothesis that I am going to test empirically is that there is no relationship 
+  * with points 
+  * densities of community districts 
+  * with other factors that across New York
+  
+I used the following methods for this project
+  * Moran's I
+
+This report including the following R module:
+  * Loading Data
+  * Cleaning Data
+  * Joinning Data
+  * Spatial autocorrelation analysis
+
+#1. Loading Data
+##1.1 Library packages
+```{r}
+# library packages
+library(spatstat)
+library(here)
+library(sp)
+library(rgeos)
+library(maptools)
+library(tmap)
+library(sf)
+library(geojson)
+library(geojsonio)
+library(tmaptools)
+library(stringr)
+library(janitor)
+library(tidyverse)
+```
+> Library packages for further analysis. 
+
+##1.2 Reading data
+```{r}
+# reading data
+# CRS: 27700
+evictions <- read.csv(here::here("project1", "Evictions_20231118.csv"),
+  # Drop NAs
+                     na = c(""))
+
+Borough <- st_read(here::here("project1", "Community Districts",
+  "geo_export_10e2af58-06db-468f-8ff7-a9572bee0603.shp"))%>%
+  st_transform(., 6538)
+
+qtm(Borough)
+```
+
+> I use the website: https://epsg.io/ to select the suitable CRS for my study area. As for this project, EPSG:6538 is used because the unit is metre and it suits the New York area.
+
+#2.Wrangling Data
+##2.1 Datatypelist
+```{r}
+Datatypelist <- evictions %>% 
+  summarise_all(class) %>%
+  pivot_longer(everything(), 
+               names_to="All_variables", 
+               values_to="Variable_class")
+
+Datatypelist
+```
+> print the data information. We can see there are 20 rows in the original dataset.
+
+```{r}
+summary(Borough)
+```
+> The summary function let us know the shape_area, shape_leng and geometry in the 'Borough' file.
+
+##2.2 Selecting data
+```{r}
+# converting the data type
+evictions$Date <- as.Date(evictions$Executed.Date, format = "%m/%d/%Y")
+
+# Selecting data from evictions
+eviction_all <- evictions %>%
+   dplyr::filter(str_detect(Date, "2020|2021|2022")) %>%
+   filter(!is.na(Longitude)) %>%
+   filter(!is.na(Latitude)) %>%
+   filter(str_detect(Residential.Commercial, "Residential"))
+
+# Count the number of each year
+eviction_count <- eviction_all %>%
+   group_by(Year = str_extract(Date, "\\d{4}")) %>%
+   summarise(Count = n())
+```
+
+The exported results look a little different, there were 2,859 and 3,827 evictions disclosed in 2020 and 2022 respectively, while there were only 147 evictions in 2021.
+
+This may be due to New York City’s lockdown policies in 2021.
+
+> Why focus on the Residental area?
+- In New York, eviction data is classified into two categories: residential and commercial. People are more likely to be affected by housing burden, social inequality, or other housing problems in the Residential Area, showing the disparity between poor and wealthy neighbourhoods. As a result, we decided to concentrate our investigation on the Residential Area.
+
+#3.Joining Data
+##3.1 Changing data types
+```{r}
+# change csv into spatial points
+sf_points_all <- eviction_all %>%
+  # a way to drop NA in the Longitude and Latitude column
+  filter(Longitude<0 & Latitude>0) %>%
+  mutate(Year = str_extract(Date, "\\d{4}")) %>%
+  st_as_sf(., coords = c("Longitude", "Latitude"),
+           crs = 4326)%>%
+  st_transform(., crs=6538)
+```
+
+Then, let's visualizing data by using tmaps.
+
+##3.2 Visualizing data
+```{r}
+# Spatial subsetting
+Sub_points <- sf_points_all[Borough, , op = st_within]
+
+# Data visualization
+years_to_plot <- c(2020, 2021, 2022)
+
+tm_layout <- tm_layout(frame = FALSE)
+
+maps <- lapply(years_to_plot, function(year) {
+  tm_shape(Borough) +
+    tm_polygons(col = NA, alpha = 0.5) +
+    tm_shape(Sub_points, filter = Sub_points$Year == year) +
+    tm_dots(col = "blue") +
+    tm_layout(main.title = as.character(year)) +
+    tm_scale_bar(position = c("left", "bottom"), width = 0.15) +
+    tm_compass(position = c("right", "top"), size = 2)
+})
+
+final_map <- tmap_arrange(maps, ncol = 3)
+
+final_map
+
+```
+A lot of points!
+
+EXPLAIN...Check the are all within the boundaries...through a spatial subset...
+
+Overall, evictions in New York City are clustered in the Northwest and Central regions. The spatial distribution patterns of eviction events in 2020, 2021, and 2022 are roughly the same, but there are large differences in the intensity of eviction events. The intensity of evictions in 2021 will be significantly less than in 2020 and 2022.
+
+#4.Spatial autocorrelation analysis
+Spatial autocorrelation refers to the potential interdependence of several variables' observed data in the same distribution area, indicating the spatial relationship between the indexes in the region (Su, 2020). The global Moran index and the local Moran index are the main indicators of spatial autocorrelation testing. If Moran’s I is greater than 0, it is an agglomeration effect, reflecting the convergence phenomenon of “the strong ones gathering” among regions (Fang and Wang, 2019; Wang and Yang, 2019).
+
+##4.1 Calculating density in each year
+Divide Sub_points into 2020,2021 and 2022
+```{r}
+Sub_points_2020 <- Sub_points %>%
+  dplyr::filter(str_detect(Date, "2020"))
+
+Sub_points_2021 <- Sub_points %>%
+  dplyr::filter(str_detect(Date, "2021"))
+
+Sub_points_2022 <- Sub_points %>%
+  dplyr::filter(str_detect(Date, "2022"))
+```
+
+Count the number of points in polygons in each year
+
+```{r}
+points_sf_2020 <- Borough %>%
+  mutate(n_2020 = lengths(st_intersects(., Sub_points_2020)))%>%
+  janitor::clean_names()%>%
+  #calculate area
+  mutate(area=st_area(.))%>%
+  #then density of the points per ward
+  mutate(density_2020=n_2020/area)%>%
+  #select density and some other variables 
+  dplyr::select(density_2020, boro_cd, n_2020)
+
+points_sf_2021 <- Borough %>%
+  mutate(n_2021 = lengths(st_intersects(., Sub_points_2021)))%>%
+  janitor::clean_names()%>%
+  #calculate area
+  mutate(area=st_area(.))%>%
+  #then density of the points per ward
+  mutate(density_2021=n_2021/area)%>%
+  #select density and some other variables 
+  dplyr::select(density_2021, boro_cd, n_2021)
+
+points_sf_2022 <- Borough %>%
+  mutate(n_2022 = lengths(st_intersects(., Sub_points_2022)))%>%
+  janitor::clean_names()%>%
+  #calculate area
+  mutate(area=st_area(.))%>%
+  #then density of the points per ward
+  mutate(density_2022=n_2022/area)%>%
+  #select density and some other variables 
+  dplyr::select(density_2022, boro_cd, n_2022)
+```
+
+Let's have a look of the change between years.
+```{r}
+#Clean data in points_sf_2020
+points_sf_2020<- points_sf_2020 %>%                    
+  group_by(boro_cd) %>%         
+  summarise(density_2020 = first(density_2020),
+          wardname= first(boro_cd),
+          plaquecount= first(n_2020))
+
+density1 <- tm_shape(points_sf_2020) +
+    tm_polygons("density_2020",
+        style="jenks",
+        palette="PuOr",
+        midpoint=NA,
+        popup.vars=c("boro_cd", "density_2020"),
+        title="Eviction Density in 2020") +
+    tm_scale_bar(position = c("left", "bottom"), width = 0.15) +
+    tm_compass(position = c("right", "top"), size = 2)
+
+#Clean data in points_sf_2021
+points_sf_2021<- points_sf_2021 %>%                    
+  group_by(boro_cd) %>%         
+  summarise(density_2021 = first(density_2021),
+          wardname= first(boro_cd),
+          plaquecount= first(n_2021))
+
+density2 <- tm_shape(points_sf_2021) +
+    tm_polygons("density_2021",
+        style="jenks",
+        palette="PuOr",
+        midpoint=NA,
+        popup.vars=c("boro_cd", "density_2021"),
+        title="Eviction Density in 2021") +
+    tm_scale_bar(position = c("left", "bottom"), width = 0.15) +
+    tm_compass(position = c("right", "top"), size = 2)
+
+#Clean data in points_sf_2022
+points_sf_2022<- points_sf_2022 %>%                    
+  group_by(boro_cd) %>%         
+  summarise(density_2022 = first(density_2022),
+          wardname= first(boro_cd),
+          plaquecount= first(n_2022))
+
+density3 <- tm_shape(points_sf_2022) +
+    tm_polygons("density_2022",
+        style="jenks",
+        palette="PuOr",
+        midpoint=NA,
+        popup.vars=c("boro_cd", "density_2022"),
+        title="Eviction Density in 2022") +
+    tm_scale_bar(position = c("left", "bottom"), width = 0.15) +
+    tm_compass(position = c("right", "top"), size = 2)
+
+t=tmap_arrange(density1, density2, density3, ncol=3)
+
+t
+```
+On the whole, the eviction density shows a distribution situation that is concentrated in the northwest area and scattered in the other areas. The density value first decreases and then increases over time. In 2020, eviction density was more concentrated in the northwest and southwest. Compared with 2021 and 2022, the area of high-value distribution in the southwest has increased, and the eviction density value in the southwest has increased.
+
+##4.2 Combining data
+3 datasets are too many!!We should combine the datasets!
+```{r}
+#remove geometry from one of the data frames if you are having issues with st_join and joining them together based on their geometries
+points_sf_2021$geometry <- NULL
+
+point_sf <- points_sf_2020 %>%
+  left_join(., 
+        points_sf_2021,
+        by = "boro_cd")
+
+point_sf$geometry <- NULL
+
+point_sf <- point_sf %>%
+  left_join(., 
+        points_sf_2022,
+        by = "boro_cd")
+```
+There are 71 obs in the new dataset point_sf
+
+##4.3 Construct Weight matrix
+First calculate the centroids of all Wards in New York.
+```{r}
+library(spdep)
+
+#First calculate the centroids of all Wards in New York
+
+coordsW <- Borough%>%
+  st_centroid()%>%
+  st_geometry()
+  
+plot(coordsW,axes=TRUE)
+```
+Then creat neighbours list for New York.
+```{r}
+#create a neighbours list
+NY_nb <- Borough %>%
+  poly2nb(., queen=T)
+
+summary(NY_nb)
+
+#plot them
+plot(NY_nb, st_geometry(coordsW), col="red")
+#add a map underneath
+plot(points_sf_2020$geometry, add=T)
+```
+Select style='C' for our spatial autocorrelation analysis, because C is globally standardised (sums over all links to n).
+
+```{r}
+#create a spatial weights matrix from these weights
+NY.lw <- NY_nb %>%
+   nb2listw(., style="W")
+```
+
+Then, we use Global Moran's I to examine overall spatial clustering characteristics
+```{r}
+I_Global_Density_2020 <- point_sf %>%
+  pull(density_2020) %>%
+  as.vector()%>%
+  moran.test(., NY.lw)
+
+I_Global_Density_2020
+```
+
+```{r}
+I_Global_Density_2021 <- point_sf %>%
+  pull(density_2021) %>%
+  as.vector()%>%
+  moran.test(., NY.lw)
+
+I_Global_Density_2021
+```
+```{r}
+I_Global_Density_2022 <- points_sf_2022 %>%
+  pull(density_2022) %>%
+  as.vector()%>%
+  moran.test(., NY.lw)
+
+I_Global_Density_2022
+```
+Global Moran's I values in 2020, 2021, and 2022 are all negative, and the p values are all greater than 0.05. This indicates that the distribution is insignificant and scattered. To further explore the distribution, we used Local Moran’s I to analyze the relationship between regions in detail.
+
+##4.5 Local Moran's I
+First, we run the code to calculate the Local Moran's I for 2020.
+```{r}
+#use the localmoran function to generate I for each ward in the city
+
+I_LWard_Local_Density_2020 <- point_sf %>%
+  pull(density_2020) %>%
+  as.vector()%>%
+  localmoran(., NY.lw)%>%
+  as_tibble()
+
+#what does the output (the localMoran object) look like?
+slice_head(I_LWard_Local_Density_2020, n=5)
+```
+The Z.li values of the first five rows are all between -1.65 and 1.65, and the P values are all greater than 0.05. Further drawing is required to obtain more detailed results.
+
+Then sf join data with original data
+```{r}
+points_sf_local_2020 <- points_sf %>%
+  mutate(density_I_2020 =as.numeric(I_LWard_Local_Density_2020$Ii))%>%
+  mutate(density_Iz_2020 =as.numeric(I_LWard_Local_Density_2020$Z.Ii))%>%
+  mutate(p_2020=as.numeric(I_LWard_Local_Density_2020$`Pr(z != E(Ii))`))
+```
+
+Then, try 2021.
+```{r}
+#use the localmoran function to generate I for each ward in the city
+
+I_LWard_Local_Density_2021 <- point_sf %>%
+  pull(density_2021) %>%
+  as.vector()%>%
+  localmoran(., NY.lw)%>%
+  as_tibble()
+
+#what does the output (the localMoran object) look like?
+slice_head(I_LWard_Local_Density_2021, n=5)
+```
+```{r}
+points_sf_local_2021 <- points_sf_joined %>%
+  mutate(density_I_2021 =as.numeric(I_LWard_Local_Density_2021$Ii))%>%
+  mutate(density_Iz_2021 =as.numeric(I_LWard_Local_Density_2021$Z.Ii))%>%
+  mutate(p_2021=as.numeric(I_LWard_Local_Density_2021$`Pr(z != E(Ii))`))
+```
+
+Then try 2022.
+```{r}
+#use the localmoran function to generate I for each ward in the city
+
+I_LWard_Local_Density_2022 <- point_sf %>%
+  pull(density_2022) %>%
+  as.vector()%>%
+  localmoran(., NY.lw)%>%
+  as_tibble()
+
+#what does the output (the localMoran object) look like?
+slice_head(I_LWard_Local_Density_2022, n=5)
+```
+```{r}
+points_sf_local_2022 <- points_sf_joined %>%
+  mutate(density_I_2022 =as.numeric(I_LWard_Local_Density_2022$Ii))%>%
+  mutate(density_Iz_2022 =as.numeric(I_LWard_Local_Density_2022$Z.Ii))%>%
+  mutate(p_2022=as.numeric(I_LWard_Local_Density_2022$`Pr(z != E(Ii))`))
+```
+
+Let's have a look at Local Moran's I in this three years.
+```{r}
+breaks1<-c(-1000,-2.58,-1.96,-1.65,1.65,1.96,2.58,1000)
+
+library(RColorBrewer)
+MoranColours<- rev(brewer.pal(8, "RdGy"))
+
+local1 <- tm_shape(points_sf_local_2020) +
+    tm_polygons("density_Iz_2020",
+        style="fixed",
+        breaks=breaks1,
+        palette=MoranColours,
+        midpoint=NA,
+        title="Local Moran's I, 2020")+
+    tm_scale_bar(position = c("left", "bottom"), width = 0.15) +
+    tm_compass(position = c("right", "top"), size = 2)
+
+local2 <- tm_shape(points_sf_local_2021) +
+    tm_polygons("density_Iz_2021",
+        style="fixed",
+        breaks=breaks1,
+        palette=MoranColours,
+        midpoint=NA,
+        title="Local Moran's I, 2021")+
+    tm_scale_bar(position = c("left", "bottom"), width = 0.15) +
+    tm_compass(position = c("right", "top"), size = 2)
+
+local3 <- tm_shape(points_sf_local_2022) +
+    tm_polygons("density_Iz_2022",
+        style="fixed",
+        breaks=breaks1,
+        palette=MoranColours,
+        midpoint=NA,
+        title="Local Moran's I, 2022")+
+    tm_scale_bar(position = c("left", "bottom"), width = 0.15) +
+    tm_compass(position = c("right", "top"), size = 2)
+
+l=tmap_arrange(local1, local2, local3, ncol=3)
+
+l
+```
+Overall, the New York City eviction density Local Moran's I in 2020, 2021, and 2022 is mostly insignificant under the scale of this study. In 2020 and 2021, only a small number of areas showed significant dispersion, and in 2022, a small number of areas showed aggregation, with values ​​between 2.0-2.6.
+
+##4.6 LISA
+```{r}
+signif <- 0.1
+
+# centers the variable of interest around its mean
+points_sf_HH_2020 <- points_sf_local_2020 %>%
+  mutate(mean_density_2020 = density_2020- mean(density_2020))%>%
+  mutate(mean_density_2020 = as.vector(mean_density_2020))%>%
+  mutate(mean_densityI_2020= density_I_2020 - mean(density_I_2020))%>%
+  mutate(quadrant = case_when(mean_density_2020>0 & mean_densityI_2020 >0 ~ 4,
+         mean_density_2020<0 & mean_densityI_2020 <0 ~ 1,
+         mean_density_2020<0 & mean_densityI_2020 >0 ~ 2,
+         mean_density_2020>0 & mean_densityI_2020 <0 ~ 3))%>%
+  mutate(quadrant=case_when(p_2020 > signif ~ 0, TRUE ~ quadrant))
+
+# centers the variable of interest around its mean
+points_sf_HH_2021 <- points_sf_local_2021 %>%
+  mutate(mean_density_2021 = density_2021- mean(density_2021))%>%
+  mutate(mean_density_2021 = as.vector(mean_density_2021))%>%
+  mutate(mean_densityI_2021= density_I_2021 - mean(density_I_2021))%>%
+  mutate(quadrant = case_when(mean_density_2021>0 & mean_densityI_2021 >0 ~ 4,
+         mean_density_2021<0 & mean_densityI_2021 <0 ~ 1,
+         mean_density_2021<0 & mean_densityI_2021 >0 ~ 2,
+         mean_density_2021>0 & mean_densityI_2021 <0 ~ 3))%>%
+  mutate(quadrant=case_when(p_2021 > signif ~ 0, TRUE ~ quadrant))
+
+# centers the variable of interest around its mean
+points_sf_HH_2022 <- points_sf_local_2022 %>%
+  mutate(mean_density_2022 = density_2022- mean(density_2022))%>%
+  mutate(mean_density_2022 = as.vector(mean_density_2022))%>%
+  mutate(mean_densityI_2022= density_I_2022 - mean(density_I_2022))%>%
+  mutate(quadrant = case_when(mean_density_2022>0 & mean_densityI_2022 >0 ~ 4,
+         mean_density_2022<0 & mean_densityI_2022 <0 ~ 1,
+         mean_density_2022<0 & mean_densityI_2022 >0 ~ 2,
+         mean_density_2022>0 & mean_densityI_2022 <0 ~ 3))%>%
+  mutate(quadrant=case_when(p_2022 > signif ~ 0, TRUE ~ quadrant))
+```
+
+```{r}
+H1 <- tm_shape(points_sf_HH_2020) +
+    tm_polygons("quadrant",
+        style="fixed",
+        breaks=breaks1,
+        palette=MoranColours,
+        midpoint=NA,
+        title="Local Moran's I, HH etc")+
+    tm_layout(inner.margins = c(0.01, 0.15, 0.01, 0.01)) +
+    tm_scale_bar(position = c("left", "bottom"), width = 0.15) +
+    tm_compass(position = c("right", "top"), size = 2)+
+    tm_legend() 
+
+
+H2 <- tm_shape(points_sf_HH_2021) +
+    tm_polygons("quadrant",
+        style="fixed",
+        breaks=breaks1,
+        palette=MoranColours,
+        midpoint=NA,
+        title="Local Moran's I, HH etc")+
+    tm_layout(inner.margins = c(0.01, 0.15, 0.01, 0.01)) +
+    tm_scale_bar(position = c("left", "bottom"), width = 0.15) +
+    tm_compass(position = c("right", "top"), size = 2)+
+    tm_legend() 
+
+
+H3 <- tm_shape(points_sf_HH_2022) +
+    tm_polygons("quadrant",
+        style="fixed",
+        breaks=breaks1,
+        palette=MoranColours,
+        midpoint=NA,
+        title="Local Moran's I, HH etc")+
+    tm_layout(inner.margins = c(0.01, 0.15, 0.01, 0.01)) +
+    tm_scale_bar(position = c("left", "bottom"), width = 0.15) +
+    tm_compass(position = c("right", "top"), size = 2)+
+    tm_legend() 
+
+H=tmap_arrange(H1, H2, H3, ncol=3)
+
+H
+```
+
+The LISA image is generally similar to the Local Moran’s I image, both showing significant spatial clustering in 2022. And the areas where spatial aggregation occurs are all administrative districts in the central region.
+
+
+## Reflection
+This study starts from the perspective of spatial autocorrelation to explore the eviction density in various boroughs of New York City from 2020 to 2022. The scientific question we want to address focuses on exploring the differences in changes in evictions in New York City before and after the COVID-19 pandemic. From the perspective of realizing scientific problems, although the Moran’s I results obtained in this study are not satisfactory, it also solves the scientific problems raised to a certain extent and can explore the differences in clustering changes in different regions. However, the research also has certain limitations. For example, the study only explored spatial patterns of evictions and did not take into account more factors that influence evictions.
+ 
+
+## references 
+* Su, H. (2020). ‘Performance audit of carbon emission intensity in Chinese inland and coastal areas’. Journal of Coastal Research. Coastal Education and Research Foundation, 115 (SI), pp. 451–455.
+* Wang, H. and Yang, J. (2019). ‘Total-factor industrial eco-efficiency and its influencing factors in China: a spatial panel data approach’. Journal of Cleaner Production. Elsevier, 227, pp. 263–271.
+
+
