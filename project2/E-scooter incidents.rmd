@@ -1,0 +1,563 @@
+---
+title: "Name: Miya Zhao"
+author: Miya Zhao 
+- 
+date: "`r format(Sys.time(), '%X, %d %B, %Y')`"
+output: html_document
+---
+
+# Start your response here
+
+## Initial project scope
+
+###1. Research Question:
+ - What is the spatial pattern of the distribution of E-scooter incidents and casualties among MSOAs in London from 2020 to 2022? Aggregated or randomly distributed?
+ 
+###2. Data:
+ - Data Source:
+   - Boundary(.shp): London MSOA boundaries. MSOAs(Middle Layer Super Output Area), are a geographic hierarchy designed to improve the reporting of small area statistics in England and Wales.
+   https://data.london.gov.uk/dataset/statistical-gis-boundary-files-london
+   Dataset: statistical-gis-boundaries-london.zip  (27.34 MB)
+   - Road Safety Data(.csv): Vehicles E-Scooter accident data, Casualty data, Collision data.
+   https://www.data.gov.uk/dataset/cb7ae6f0-4be6-4935-9277-47e5ce24a11f/road-safety-data
+   Dataset: 
+     dft-road-casualty-statistics-vehicle-e-scooter-2020-Latest-Published-Year.csv (81.4 MB; 2020-2022)
+     dft-road-casualty-statistics-collision-last-5-years.csv(156 KB;01/01/2018-31/12/2022)
+     dft-road-casualty-statistics-casualty-last-5-years.csv(45.6 MB; 2020-2022)
+   - ***NOTE: Because the as.numeric() function in R language reports warnings, this study used excel to change the accident_index column to numeric to join data.
+     
+ - Study Area:
+   - London LSOAs.
+     - Why? The heavy-tailed distribution of geographical events shows that there are far more small geographical features than large geographical features (Jiang, 2015). Using the LSOA scale instead of the city scale for spatial pattern analysis can effectively detect spatial differences within cities. To a certain extent, it is consistent with the Pareto thinking of bottom-up simulation of geographical problems, and may become one of the ideas for solving urban spatial heterogeneity.
+     
+ - Study Period: 2020, 2021, 2022
+   - Why? COVID-19 is an inevitable issue in recent years, leading to a global economic recession that is likely to have an impact on eviction. COVID-19 began to spread on a large scale in 2020, and various parts of the world, including London, experienced blockades, quarantines, and restrictive measures. The epidemic situation of COVID-19 has eased in 2021 and 2022, and people have shown adaptation to the epidemic.
+   
+ - What are the NA values - do they matter?
+   - The study dropped NA values three times in total. The first time was to identify vacant values without longitude and latitude, once longitude<0 & latitude>0, and once during the table merging process.
+ 
+ - 
+   
+ - CRS: EPSG 27700
+    - Why? I use the website: https://epsg.io/ to select the suitable CRS for my study area. EPSG 27700 is always used for United Kingdom Ordnance Survey. As for this project, EPSG 27700 is used because the unit is metre and it suits the London Area.
+    
+###3.Method:
+ - The null hypothesis that I am going to test empirically is that there is no relationship：
+   * With densities of E-scooter incidents and casualties.
+   * And no difference between years.
+   
+ - I used the following methods for this project:
+   * Point pattern analysis
+     - Why?Point pattern analysis is concerned with describing patterns of points over space and making inferences about the process that could have generated an observed pattern. With the development of GIS systems, there has been extensive development in areas such as epidemiological transmission and settlement distribution studies due to the unique advantages of point pattern analysis in analysing completely mapped spatial point process data(Gatrell et al., 1996). The point pattern analysis could be classified into two categories (Haggett et al., 1977). the first one is distance-based techniques, using information on the spacing of the points to characterize the pattern; the second one is area-based techniques, relying on various characteristics of the frequency distribution of the observed numbers of points in regularly defined sub-regions of the study area.
+     
+   * Spatial autocorrelation Analysis
+     - Why? Spatial autocorrelation analysis refers to the potential interdependence of several variables' observed data in the same distribution area, indicating the spatial relationship between the indexes in the region (Su, 2020). The global Moran index and the local Moran index are the main indicators of spatial autocorrelation testing. If Moran’s I is greater than 0, it is an agglomeration effect, reflecting the convergence phenomenon of “the strong ones gathering” among regions (Wang and Yang, 2019). In this study, it is necessary to use spatial autocorrelation to analyze the differences and spatial patterns between E-scooter incidents and casualties between different LSOAs.
+
+ - This report including the following R module:
+   - Loading Data
+   - Wrangling Data
+   - Joinning Data
+   - Point pattern analysis
+   - Spatial autocorrelation analysis
+    
+#1. Loading Data
+##1.1 Library packages
+```{r}
+# library packages
+library(spatstat)
+library(here)
+library(sp)
+library(rgeos)
+library(maptools)
+library(tmap)
+library(sf)
+library(geojson)
+library(geojsonio)
+library(tmaptools)
+library(stringr)
+library(janitor)
+library(tidyverse)
+library(spdep)
+```
+> Library packages for further analysis. 
+
+##1.2 Reading data
+```{r}
+# reading data
+# CRS: 27700
+e_scooter <- read.csv(here::here("project2",
+                            "dft-road-casualty-statistics-vehicle-e-scooter-2020-Latest-Published-Year.csv"),
+  # Drop NAs
+                     na = c(""))
+
+collision <- read.csv(here::here("project2", "dft-road-casualty-statistics-collision-last-5-years.csv"),
+  # Drop NAs
+                     na = c(""))
+
+casualty <- read.csv(here::here("project2",
+                                "dft-road-casualty-statistics-casualty-last-5-years.csv"),
+  # Drop NAs
+                     na = c(""))
+
+Borough <- st_read(here::here("project2",
+  "statistical-gis-boundaries-london",
+                              "statistical-gis-boundaries-london",
+                              "ESRI",
+  "MSOA_2011_London_gen_MHW.shp"))%>%
+  st_transform(., 27700)
+
+qtm(Borough)
+```
+ - The spatial object layer has 4835 rows (polygons).
+ - The e_scooter file (with extra data) has 3231 rows totally.
+ - The casualty file (with extra data) has 693028 rows totally.
+ 
+#2.Wrangling Data
+##2.1 Datatypelist
+Take a brief look at the contents of the dataset.
+```{r}
+Datatypelist1 <- e_scooter %>% 
+  summarise_all(class) %>%
+  pivot_longer(everything(), 
+               names_to="All_variables", 
+               values_to="Variable_class")
+
+Datatypelist1
+```
+In Datatypelist1, accident_index is a unique value for each accident. So we choose accident_index to join data.
+ 
+Then let's have a brief look at the collision.
+```{r}
+Datatypelist2 <- collision %>% 
+  summarise_all(class) %>%
+  pivot_longer(everything(), 
+               names_to="All_variables", 
+               values_to="Variable_class")
+
+Datatypelist2
+```
+In Datatypelist2, longitude and latitude can be used to change csv file into spatial file.
+
+```{r}
+Datatypelist3 <- casualty %>% 
+  summarise_all(class) %>%
+  pivot_longer(everything(), 
+               names_to="All_variables", 
+               values_to="Variable_class")
+
+Datatypelist3
+```
+In Datatypelist3, casualty_reference is a unique value for each casualty in a singular accident. It can be used in calculating the number of casualty.
+
+##2.2 Selecting data
+clean all data to 2020-2022. 
+```{r}
+# Selecting data from casualty
+casualty_new <- casualty %>%
+   dplyr::filter(str_detect(accident_year, "2020|2021|2022")) %>%
+   dplyr::select(accident_index, accident_year, sex_of_casualty, age_of_casualty, casualty_type, casualty_reference)
+
+# Selecting data from collision
+collision <- collision %>%
+  dplyr::select(accident_index, longitude, latitude, lsoa_of_accident_location)
+```
+Now there are 141936 obs in casualty now.
+
+#3.Joining Data
+##3.1 Joining csv data
+First, the overall traffic safety data from 2020 to 2022 is processed.
+```{r}
+accident <- e_scooter %>%
+  left_join(., collision, by="accident_index")
+
+# accident_index is not the only value in casualty (casualty reference is the only value), so use left join like this:
+casualty_collision <- casualty_new %>%
+  left_join(., collision, by="accident_index")
+
+# Use e_scooter to match casualty_collision and remove null values
+accident_casualty <- casualty_collision %>%
+  left_join(., e_scooter, by="accident_index") %>%
+  filter(!is.na(vehicle_type))
+```
+- Now there are 3231 rows in accident(event).
+- And there are 3433 rows in casualty.
+It can be seen that the number of people injured in most e_scooter traffic accidents is around 1.
+
+Then, join the csv data into spatial data.
+##3.2 Changing data types
+```{r}
+# change csv into spatial points
+sf_points_accident <- accident %>%
+  # a way to drop NA in the Longitude and Latitude column
+  filter(longitude<0 & latitude>0) %>%
+  st_as_sf(., coords = c("longitude", "latitude"),
+           crs = 4326)%>%
+  st_transform(., crs=27700)
+
+sf_points_casualty <- accident_casualty %>%
+  # a way to drop NA in the Longitude and Latitude column
+  filter(longitude<0 & latitude>0) %>%
+  st_as_sf(., coords = c("longitude", "latitude"),
+           crs = 4326)%>%
+  st_transform(., crs=27700)
+```
+429 points had been droped after droping NA in accident.
+453 points had been droped after droping NA in casualty.
+
+##3.3 Spatial subsetting
+```{r}
+# Spatial subsetting
+Sub_points_accident <- sf_points_accident[Borough, , op = st_within]
+Sub_points_casualty <- sf_points_casualty[Borough, , op = st_within]
+```
+There are 1013 points in accident after spatial subsetting.
+There are 1070 points in casualty after spatial subsetting.
+
+Let's have a quick look for the points data!
+```{r}
+tmap_mode("plot")
+tm_shape(Borough) +
+  tm_polygons(col = NA, alpha = 0.5) +
+tm_shape(Sub_points_accident) +
+  tm_dots(col = "blue")
+
+tmap_mode("plot")
+tm_shape(Borough) +
+  tm_polygons(col = NA, alpha = 0.5) +
+tm_shape(Sub_points_casualty) +
+  tm_dots(col = "blue")
+```
+#4. Point pattern analysis
+##4.1 Ripley’s K function
+Superficial characteristics of a point pattern such as clustering (points with a tendency to appear near each other) or regularity (points appearing far from each other, also known as inhibition) can be observed from visual inspection. These characteristics, as well as other less obvious characteristics, can be characterized through summary statistics and summary functions.
+Ripley’s K function is a tool for analyzing completely mapped spatial point process data(Lee, Kulperger and Yu, 2013). Ripley's K function can avoid scale and zoning problems associated with quadrat analysis and easily identify the clustering distance in this study.
+
+```{r}
+window <- as.owin(Borough)
+plot(window)
+
+#create sp objects
+Sub_points_accident_sp<- Sub_points_accident %>%
+  as(., 'Spatial')
+
+Sub_points_casualty_sp<- Sub_points_casualty %>%
+  as(., 'Spatial')
+#create ppp objects
+Sub_points_accident.ppp <- ppp(x=Sub_points_accident_sp@coords[,1],
+                          y=Sub_points_accident_sp@coords[,2],
+                          window=window)
+
+Sub_points_casualty.ppp <- ppp(x=Sub_points_casualty_sp@coords[,1],
+                          y=Sub_points_casualty_sp@coords[,2],
+                          window=window)
+```
+
+
+```{r}
+K1 <- Sub_points_accident.ppp %>%
+  Kest(., correction="border") %>%
+  plot()
+```
+The results of ralpys’K are not obvious, so we try to set the values of eps and MinPts to cluster.
+```{r}
+K2 <- Sub_points_casualty.ppp %>%
+  Kest(., correction="border") %>%
+  plot()
+```
+The results of ralpys’K are not obvious, so we try to set the values of eps and MinPts to cluster.
+
+##4.2 DBSCAN
+```{r}
+library(sp)
+
+#first extract the points from the spatial points data frame
+points_todf <- Sub_points_accident_sp %>%
+  coordinates(.)%>%
+  as.data.frame()
+
+#now run the dbscan analysis
+points_todf_DBSCAN <- points_todf %>%
+  fpc::dbscan(.,eps = 1700, MinPts = 40)
+
+points_todf%>%
+  dbscan::kNNdistplot(.,k=50)
+
+#now quickly plot the results
+plot(points_todf_DBSCAN, points_todf, main = "Accident DBSCAN Output", frame = F)
+plot(Borough$geometry, add=T)
+```
+After many attempts, we finally chose eps = 1700, MinPts = 40 to analyze the accident.
+
+```{r}
+#first extract the points from the spatial points data frame
+points_todf_2 <- Sub_points_casualty_sp %>%
+  coordinates(.)%>%
+  as.data.frame()
+
+#now run the dbscan analysis
+points_todf_DBSCAN_2 <- points_todf_2 %>%
+  fpc::dbscan(.,eps = 1800, MinPts = 40)
+
+points_todf_2%>%
+  dbscan::kNNdistplot(.,k=50)
+
+#now quickly plot the results
+plot(points_todf_DBSCAN_2, points_todf_2, main = "Casualty DBSCAN Output", frame = F)
+plot(Borough$geometry, add=T)
+```
+After many attempts, we finally chose eps = 1800, MinPts = 40 to analyze the accident.
+
+Add the cluster information to our original dataframe
+
+```{r}
+points_todf<- points_todf %>%
+  mutate(dbcluster=points_todf_DBSCAN$cluster)
+
+points_todf_2<- points_todf_2 %>%
+  mutate(dbcluster=points_todf_DBSCAN_2$cluster)
+```
+
+Convert our original data frame to a sf object again
+
+```{r}
+tosf <- points_todf%>%
+  st_as_sf(., coords = c("coords.x1", "coords.x2"), 
+                   crs = 27700)%>%
+  filter(dbcluster>0)
+
+tosf_2 <- points_todf_2%>%
+  st_as_sf(., coords = c("coords.x1", "coords.x2"), 
+                   crs = 27700)%>%
+  filter(dbcluster>0)
+```
+
+Map the data - remember we are adding layers one by one
+##4.3 Data visualization
+```{r}
+colours<- get_brewer_pal("Set1", n = 19)
+
+tmap_mode("plot")
+tm_shape(Borough) +
+  tm_polygons(col = NA, alpha = 0.5) +
+  tm_shape(tosf) +
+  tm_dots(col = "dbcluster",  palette = colours, style = "cat")
+```
+It can be seen from the figure that there are three types of aggregation in the distribution of accidents, one of which is mainly concentrated in the central area of the city, and the other two are on the west side.
+
+Next we look at the injured population.
+```{r}
+tmap_mode("plot")
+tm_shape(Borough) +
+  tm_polygons(col = NA, alpha = 0.5) +
+  tm_shape(tosf_2) +
+  tm_dots(col = "dbcluster",  palette = colours, style = "cat")
+```
+Compared with the previous picture, the distribution of the injured population can more clearly show the categories, and there are more obvious clusters on the west and northwest sides.
+
+#5. Spatial autocorrelation analysis
+##5.1 Calculating density
+It is observed that there is not much difference between the two sets of data. Let us calculate the density for comparison.
+```{r}
+Sub_accident_density <- Borough %>%
+  mutate(n = lengths(st_intersects(., Sub_points_accident)))%>%
+  janitor::clean_names()%>%
+  #calculate area
+  mutate(area=st_area(.))%>%
+  #then density of the points per ward
+  mutate(density=n/area)
+
+Sub_casualty_density <- Borough %>%
+  mutate(n = lengths(st_intersects(., Sub_points_casualty)))%>%
+  janitor::clean_names()%>%
+  #calculate area
+  mutate(area=st_area(.))%>%
+  #then density of the points per ward
+  mutate(density=n/area)
+```
+Density is calculated based on borough, so the number of rows becomes 4835 again.
+
+Then We started to draw two density comparison pictures.
+```{r}
+#Clean data in Sub_accident_density
+Sub_accident_density<- Sub_accident_density %>%                    
+  group_by(msoa11cd) %>%         
+  summarise(density = first(density),
+          wardname= first(msoa11cd),
+          plaquecount= first(n))
+
+density1 <- tm_shape(Sub_accident_density) +
+    tm_polygons("density",
+        style="jenks",
+        palette="PuOr",
+        midpoint=NA,
+        popup.vars=c("msoa11cd", "density"),
+        title="E-scooter incidents Density in 2020~2022") +
+    tm_scale_bar(position = c("left", "bottom"), width = 0.15) +
+    tm_compass(position = c("right", "top"), size = 2)
+```
+
+
+```{r}
+#Clean data in Sub_casualty_density
+Sub_casualty_density<- Sub_casualty_density %>%                    
+  group_by(msoa11cd) %>%         
+  summarise(density = first(density),
+          wardname= first(msoa11cd),
+          plaquecount= first(n))
+
+density2 <- tm_shape(Sub_casualty_density) +
+    tm_polygons("density",
+        style="jenks",
+        palette="PuOr",
+        midpoint=NA,
+        popup.vars=c("msoa11cd", "density"),
+        title="E-scooter casualties Density in 2020~2022") +
+    tm_scale_bar(position = c("left", "bottom"), width = 0.15) +
+    tm_compass(position = c("right", "top"), size = 2)
+```
+
+```{r}
+t=tmap_arrange(density1, density2, ncol=2)
+
+t
+```
+Overall, E-scooter incidents and casualties mostly occur in urban centers, and there is a certain downward trend in density from the center to the periphery. There are a small number of high-value areas scattered in the southeastern region, which may be due to the relatively concentrated distribution of residents in this area. It can be seen from the density image that the difference between the two images is not significant, and only some MSOA in the southwest have a first-level density difference.
+
+##4.2 Construct Weight matrix
+First calculate the centroids of all LSOAs in London.
+```{r}
+#First calculate the centroids of all Wards in New York
+
+coordsW <- Borough%>%
+  st_centroid()%>%
+  st_geometry()
+  
+plot(coordsW,axes=TRUE)
+```
+Then creat neighbours list for London.
+```{r}
+#create a neighbours list
+London_nb <- Borough %>%
+  poly2nb(., queen=T)
+
+summary(London_nb)
+
+#plot them
+plot(London_nb, st_geometry(coordsW), col="red")
+```
+Select style='C' for our spatial autocorrelation analysis, because C is globally standardised (sums over all links to n).
+
+```{r}
+#create a spatial weights matrix from these weights
+London.lw <- London_nb %>%
+   nb2listw(., style="W", zero.policy = TRUE)
+```
+
+##4.3 Global Moran's I
+Then, we use Global Moran's I to examine overall spatial clustering characteristics
+```{r}
+Gobal_Density_accident <- Sub_accident_density %>%
+  pull(density) %>%
+  as.vector()%>%
+  moran.test(., London.lw)
+
+Global_Density_accident
+```
+```{r}
+Gobal_Density_casualty <- Sub_casualty_density %>%
+  pull(density) %>%
+  as.vector()%>%
+  moran.test(., London.lw)
+
+Global_Density_casualty
+```
+##4.4 Local Moran's I
+First, we run the code to calculate the Local Moran's I for accident.
+```{r}
+#use the localmoran function to generate I for each ward in the city
+
+Local_Density_accident <- Sub_accident_density %>%
+  pull(density) %>%
+  as.vector()%>%
+  localmoran(., London.lw)%>%
+  as_tibble()
+
+Local_Density_casualty <- Sub_casualty_density %>%
+  pull(density) %>%
+  as.vector()%>%
+  localmoran(., London.lw)%>%
+  as_tibble()
+```
+
+Then sf join data with original data
+```{r}
+Local_Density_accident <- Local_Density_accident%>%
+  mutate(density =as.numeric(Local_Density_accident$Ii))%>%
+  mutate(density_Iz =as.numeric(Local_Density_accident$Z.Ii))%>%
+  mutate(p = as.numeric(Local_Density_accident$`Pr(z != E(Ii))`))
+
+Local_Density_casualty <- Local_Density_casualty%>%
+  mutate(density =as.numeric(Local_Density_casualty$Ii))%>%
+  mutate(density_Iz =as.numeric(Local_Density_casualty$Z.Ii))%>%
+  mutate(p = as.numeric(Local_Density_casualty$`Pr(z != E(Ii))`))
+```
+
+Let's have a look at Local Moran's I in this three years.
+```{r}
+Local_Density_accident_sf <- st_as_sf(Local_Density_accident, coords = c("longitude", "latitude"))
+
+breaks1<-c(-1000,-2.58,-1.96,-1.65,1.65,1.96,2.58,1000)
+
+library(RColorBrewer)
+MoranColours<- rev(brewer.pal(8, "RdGy"))
+
+local1 <- tm_shape(Local_Density_accident) +
+    tm_polygons("density_Iz",
+        style="fixed",
+        breaks=breaks1,
+        palette=MoranColours,
+        midpoint=NA,
+        na.show = FALSE,
+        title="Local Moran's I, Accident")+
+    tm_scale_bar(position = c("left", "bottom"), width = 0.15) +
+    tm_compass(position = c("right", "top"), size = 2)
+
+local2 <- tm_shape(Local_Density_casualty) +
+    tm_polygons("density_Iz",
+        style="fixed",
+        breaks=breaks1,
+        palette=MoranColours,
+        midpoint=NA,
+        na.show = FALSE,
+        title="Local Moran's I, Casualty")+
+    tm_scale_bar(position = c("left", "bottom"), width = 0.15) +
+    tm_compass(position = c("right", "top"), size = 2)
+
+l=tmap_arrange(local1, local2, ncol=2)
+
+l
+```
+There is an error in the sf file format, so the image cannot be output.
+
+The results of the global autocorrelation test show that there is insignificant clustering of E-scooter incidents and casualties.
+
+# Conclusion
+  The research conclusion shows that the number of accidents involving electric scooters and the number of injuries are generally consistent in both value and distribution. This is a relatively minor manifestation of the electric scooter traffic accident. The distribution of events shows a distribution pattern consistent with road density, which can intuitively reflect that in areas with denser roads, the incidence of electric scooter accidents is higher.
+  
+# Reflection
+  This study uses point pattern analysis and spatial autocorrelation analysis to explore E-scooter incidents and casualties at the small administrative level in London. The final conclusion found that there was slight clustering in both E-scooter incidents and casualties, but they did not pass the global spatial autocorrelation test.
+  The positivist approach in this study is used throughout the text. From point pattern analysis to spatial autocorrelation testing, model construction relies more on the readability of the data.
+  However, some scholars criticize positivism(Dobson, 1993) and believe that the essence of point pattern analysis and spatial autocorrelation analysis is to simplify infinitely complex social and cultural influences into a numerical format limited to Cartesian space. In this project, this simplification will lead to the fuzzy treatment of electric bicycle traffic accidents, that is, we only use point data and the number of injuries to characterize traffic accidents, without taking into account factors such as the severity of injuries, the size of the incident, the time of the incident, and the perpetrator. psychological conditions and other factors. Although these factors can be further analyzed using methods such as GWR, their specific details are still difficult to quantify through GIS systems due to the limitations of positivism itself.
+  Therefore, in research, in addition to positivism, we also need to consider idealism and structuralism. As in this study, we can conduct in-depth research on individual MSOAs to explore the causes of E-scooter traffic accidents in the area (such as unreasonable local road settings, etc.).
+## Discussion
+  Mair et al.'s(2021) research on the German E-Scooter focused more on the causes of injuries caused by the E-Scooter. This study conducted a detailed survey of those injured in E-Scooter traffic accidents and classified the gender of the injured, the location of the injury, and the recovery status after surgery. Studies have shown that patients who drink alcohol and do not wear helmets significantly increase the probability of injury. Limited by data availability and a duration of 6 hours, this study cannot investigate the occurrence of traffic accidents in detail. However, further regression analysis can be performed on weather, road conditions, etc. to gain a deeper understanding of the occurrence of the event.
+## Limitation
+  Due to time constraints, this study has many limitations. For example, gender differences are a good topic. Research can calculate the density of the number of injuries separately for men and women, and compare the differences in injuries between men and women. Or by comparing electric vehicles with different models and functions, further relevant analysis and research can be carried out.
+# Reference
+Jiang, B. (2015). ‘Geospatial analysis requires a different way of thinking: the problem of spatial heterogeneity’. GeoJournal. Springer, 80 (1), pp. 1–13.
+Dobson, J. E. (1993). ‘The geographic revolution: A retrospective on the age of automated geography’. The Professional Geographer. Taylor & Francis, 45 (4), pp. 431–439.
+Su, H. (2020). ‘Performance audit of carbon emission intensity in Chinese inland and coastal areas’. Journal of Coastal Research. Coastal Education and Research Foundation, 115 (SI), pp. 451–455.
+Wang, H. and Yang, J. (2019). ‘Total-factor industrial eco-efficiency and its influencing factors in China: a spatial panel data approach’. Journal of Cleaner Production. Elsevier, 227, pp. 263–271.
+Gatrell A C, Bailey T C, Diggle P J, et al. Spatial point pattern analysis and its application in geographical epidemiology[J]. Transactions of the Institute of British geographers, 1996: 256-274.
+Lee J S W, Kulperger R J, Yu H. An R Package for Large-Scale Spatial Analysis with Parallel Computing[J]. The University of Western Ontario: London, ON, Canada. Obtained from http://www. statistics. gov. hk/wsc/IPS031-P2-S. pdf, 2013.
+Mair, O., Wurm, M., Müller, M., Greve, F., Pesch, S., Pförringer, D., Biberthaler, P., Kirchhoff, C. and Zyskowski, M. (2021). ‘E-Scooter-Unfälle und deren Folgen’. Der Unfallchirurg, 124 (5), pp. 382–390. doi: 10.1007/s00113-020-00910-7.
